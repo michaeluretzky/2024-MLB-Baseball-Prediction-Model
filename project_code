@@ -1,0 +1,254 @@
+# ===========================================================
+# MLB TEAM WINS FORECAST MODEL — FINAL SAFE VERSION
+# ===========================================================
+# Predicts next-season team wins using team + player stats.
+# Handles all schema, naming, and API irregularities safely.
+# ===========================================================
+
+# -----------------------------------------------------------
+# 0. DEPENDENCIES
+# -----------------------------------------------------------
+required_pkgs <- c("httr","jsonlite","dplyr","tidyr","xgboost",
+                   "caret","ggplot2","zoo","purrr","stringr")
+installed <- rownames(installed.packages())
+for (pkg in required_pkgs) {
+  if (!(pkg %in% installed)) install.packages(pkg, dependencies = TRUE)
+}
+lapply(required_pkgs, library, character.only = TRUE)
+
+base_url <- "https://statsapi.mlb.com/api/v1"
+
+# -----------------------------------------------------------
+# 1. SAFE JSON WRAPPER
+# -----------------------------------------------------------
+get_api_json <- function(url) {
+  resp <- httr::GET(url)
+  if (httr::status_code(resp) != 200) {
+    warning(paste("⚠️ API error:", httr::status_code(resp), "→", url))
+    return(NULL)
+  }
+  jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"), simplifyVector = TRUE)
+}
+
+# -----------------------------------------------------------
+# 2. LIVE ROSTER FETCHER
+# -----------------------------------------------------------
+roster_cache <- list()
+load_rosters <- function(year, refresh = FALSE) {
+  if (!refresh && !is.null(roster_cache[[as.character(year)]])) {
+    message(paste("🧠 Using cached roster for", year))
+    return(roster_cache[[as.character(year)]])
+  }
+  
+  teams_json <- get_api_json(paste0(base_url, "/teams?sportId=1"))
+  if (is.null(teams_json$teams)) return(data.frame())
+  
+  valid_teams <- teams_json$teams %>%
+    dplyr::filter(active == TRUE & sport$name == "Major League Baseball")
+  
+  all_rosters <- purrr::map_dfr(seq_len(nrow(valid_teams)), function(i) {
+    tid <- valid_teams$id[i]
+    team_name <- valid_teams$name[i]
+    roster_url <- paste0(base_url, "/teams/", tid, "/roster?season=", year)
+    roster_json <- tryCatch(get_api_json(roster_url), error = function(e) NULL)
+    if (!is.null(roster_json$roster)) {
+      data.frame(
+        Team = team_name,
+        PlayerID = roster_json$roster$person$id,
+        Player = roster_json$roster$person$fullName,
+        Position = roster_json$roster$position$abbreviation,
+        Year = year
+      )
+    } else NULL
+  })
+  
+  roster_cache[[as.character(year)]] <<- all_rosters
+  message(paste("✅ Rosters loaded for", year, "→", nrow(all_rosters), "players"))
+  return(all_rosters)
+}
+
+# -----------------------------------------------------------
+# 3. LOAD TEAM + PLAYER DATA
+# -----------------------------------------------------------
+load_team_and_player_data <- function(years = 2019:2024) {
+  standings_data <- hitters_data <- pitchers_data <- players_data <- list()
+  
+  for (yr in years) {
+    message(paste("📦 Fetching", yr, "data..."))
+    
+    # 🏆 Team Standings
+    standings_json <- get_api_json(paste0(base_url, "/standings?season=", yr))
+    if (!is.null(standings_json$records)) {
+      records <- standings_json$records
+      standings_data[[as.character(yr)]] <- bind_rows(lapply(records$teamRecords, function(x) {
+        data.frame(Team = x$team$name, Wins = x$wins, Losses = x$losses, Year = yr)
+      }))
+    }
+    
+    # ⚾ Team Hitting
+    hit_json <- get_api_json(paste0(base_url, "/teams/stats?group=hitting&season=", yr))
+    if (!is.null(hit_json$stats[[1]]$splits)) {
+      hit_df <- hit_json$stats[[1]]$splits
+      hit_df$Team <- sapply(hit_df$team, function(x) x$name)
+      hit_df$Year <- yr
+      hitters_data[[as.character(yr)]] <- cbind(Team = hit_df$Team, hit_df$stat)
+    }
+    
+    # ⚾ Team Pitching
+    pit_json <- get_api_json(paste0(base_url, "/teams/stats?group=pitching&season=", yr))
+    if (!is.null(pit_json$stats[[1]]$splits)) {
+      pit_df <- pit_json$stats[[1]]$splits
+      pit_df$Team <- sapply(pit_df$team, function(x) x$name)
+      pit_df$Year <- yr
+      pitchers_data[[as.character(yr)]] <- cbind(Team = pit_df$Team, pit_df$stat)
+    }
+    
+    # 👤 Player Stats
+    roster <- load_rosters(yr)
+    if (nrow(roster) > 0) {
+      player_stats <- purrr::map_dfr(roster$PlayerID, function(pid) {
+        url <- paste0(base_url, "/people/", pid, "/stats?stats=season&season=", yr)
+        js <- tryCatch(get_api_json(url), error = function(e) NULL)
+        if (is.null(js) || is.null(js$stats) || length(js$stats) == 0) return(NULL)
+        stat_splits <- js$stats[[1]]$splits
+        if (is.null(stat_splits) || length(stat_splits) == 0) return(NULL)
+        stat_block <- tryCatch(as.data.frame(stat_splits[[1]]$stat), error = function(e) NULL)
+        if (is.null(stat_block)) return(NULL)
+        stat_block$PlayerID <- pid
+        stat_block$Team <- roster$Team[match(pid, roster$PlayerID)]
+        stat_block$Year <- yr
+        stat_block
+      })
+      if (nrow(player_stats) > 0) {
+        players_data[[as.character(yr)]] <- player_stats
+        message(paste("✅ Player stats loaded for", yr, ":", nrow(player_stats)))
+      }
+    }
+  }
+  
+  list(
+    standings_data = bind_rows(standings_data),
+    hitters_data = bind_rows(hitters_data),
+    pitchers_data = bind_rows(pitchers_data),
+    players_data = bind_rows(players_data)
+  )
+}
+
+# -----------------------------------------------------------
+# 4. PREPARE DATA (safe schema-checked)
+# -----------------------------------------------------------
+prepare_data <- function(hitters_data, pitchers_data, standings_data, players_data) {
+  
+  # --- Guarantee Team/Year columns exist ---
+  safe_cols <- function(df) {
+    if (!"Team" %in% names(df)) df$Team <- NA_character_
+    if (!"Year" %in% names(df)) df$Year <- NA_integer_
+    df |> dplyr::filter(!is.na(Team), !is.na(Year))
+  }
+  hitters_data   <- safe_cols(hitters_data)
+  pitchers_data  <- safe_cols(pitchers_data)
+  standings_data <- safe_cols(standings_data)
+  players_data   <- safe_cols(players_data)
+  
+  # --- Summarize + Join ---
+  hitters <- hitters_data %>%
+    group_by(Year, Team) %>%
+    summarise(
+      R = mean(runs, na.rm = TRUE),
+      HR = mean(homeRuns, na.rm = TRUE),
+      RBI = mean(rbi, na.rm = TRUE),
+      OPS = mean(ops, na.rm = TRUE),
+      AB = sum(atBats, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  pitchers <- pitchers_data %>%
+    group_by(Year, Team) %>%
+    summarise(
+      ERA = mean(era, na.rm = TRUE),
+      SO = mean(strikeOuts, na.rm = TRUE),
+      WHIP = mean(whip, na.rm = TRUE),
+      IP = sum(inningsPitched, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  player_team_agg <- players_data %>%
+    group_by(Year, Team) %>%
+    summarise(
+      player_OBP = mean(onBasePercentage, na.rm = TRUE),
+      player_SLG = mean(slg, na.rm = TRUE),
+      player_WAR = mean(war, na.rm = TRUE),
+      player_BA = mean(avg, na.rm = TRUE),
+      player_RBI = mean(rbi, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  df <- standings_data %>%
+    left_join(hitters, by = c("Year","Team")) %>%
+    left_join(pitchers, by = c("Year","Team")) %>%
+    left_join(player_team_agg, by = c("Year","Team")) %>%
+    arrange(Team, Year) %>%
+    group_by(Team) %>%
+    mutate(
+      R_roll3 = zoo::rollapply(R, 3, mean, fill = NA, align = "right"),
+      HR_roll3 = zoo::rollapply(HR, 3, mean, fill = NA, align = "right"),
+      ERA_roll3 = zoo::rollapply(ERA, 3, mean, fill = NA, align = "right"),
+      OPS_roll3 = zoo::rollapply(OPS, 3, mean, fill = NA, align = "right"),
+      player_OBP_roll3 = zoo::rollapply(player_OBP, 3, mean, fill = NA, align = "right"),
+      Prev_Wins = dplyr::lag(Wins, 1)
+    ) %>%
+    ungroup() %>%
+    drop_na()
+  
+  features <- c(
+    "R","HR","RBI","OPS","ERA","SO","WHIP","IP",
+    "R_roll3","HR_roll3","ERA_roll3","OPS_roll3",
+    "player_OBP","player_SLG","player_WAR","player_BA",
+    "player_RBI","player_OBP_roll3","Prev_Wins"
+  )
+  
+  list(df = df, features = features, target = "Wins")
+}
+
+# -----------------------------------------------------------
+# 5. TRAIN + FORECAST
+# -----------------------------------------------------------
+train_and_forecast <- function(df, features, target = "Wins") {
+  df <- df %>%
+    group_by(Team) %>%
+    mutate(Next_Wins = dplyr::lead(Wins, 1)) %>%
+    drop_na()
+  
+  X <- df[, features]
+  y <- df$Next_Wins
+  preproc <- caret::preProcess(X, method = c("center","scale"))
+  X_scaled <- predict(preproc, X)
+  
+  model <- xgboost(
+    data = xgb.DMatrix(as.matrix(X_scaled), label = y),
+    nrounds = 400, eta = 0.05, max_depth = 6,
+    subsample = 0.8, colsample_bytree = 0.8, verbose = 0
+  )
+  
+  latest_year <- max(df$Year)
+  recent <- df %>% filter(Year == latest_year)
+  preds <- predict(model, as.matrix(predict(preproc, recent[, features])))
+  
+  forecast <- recent %>%
+    select(Team, Wins) %>%
+    mutate(Predicted_2025_Wins = round(preds),
+           Change_vs_Last = Predicted_2025_Wins - Wins) %>%
+    arrange(desc(Predicted_2025_Wins))
+  
+  cat("\n🏆 Predicted 2025 MLB Team Wins:\n")
+  print(forecast, n = nrow(forecast))
+}
+
+# -----------------------------------------------------------
+# 6. MAIN ENTRY — use mlb_data instead of data()
+# -----------------------------------------------------------
+main <- function() {
+  mlb_data <- load_team_and_player_data()
+  
+    
+    
