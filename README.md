@@ -1,6 +1,6 @@
 # MLB Team Wins Forecast Model
 
-A machine learning model that predicts next-season MLB team win totals using historical team and player statistics from the MLB Stats API.
+Final project for my MS in Business Analytics: A machine learning model that predicts next-season MLB team win totals using historical team and player statistics from the MLB Stats API.
 
 ## Overview
 
