@@ -247,8 +247,8 @@ train_and_forecast <- function(df, features, target = "Wins") {
 # -----------------------------------------------------------
 # 6. MAIN ENTRY — use mlb_data instead of data()
 # -----------------------------------------------------------
-main <- function() {
-  mlb_data <- load_team_and_player_data()
+main <- function()
+mlb_data <- load_team_and_player_data()
   
     
     
