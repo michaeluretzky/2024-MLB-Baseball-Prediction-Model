@@ -24,7 +24,7 @@ base_url <- "https://statsapi.mlb.com/api/v1"
 get_api_json <- function(url) {
   resp <- httr::GET(url)
   if (httr::status_code(resp) != 200) {
-    warning(paste("⚠️ API error:", httr::status_code(resp), "→", url))
+    warning(paste("API error:", httr::status_code(resp), "→", url))
     return(NULL)
   }
   jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"), simplifyVector = TRUE)
@@ -36,7 +36,7 @@ get_api_json <- function(url) {
 roster_cache <- list()
 load_rosters <- function(year, refresh = FALSE) {
   if (!refresh && !is.null(roster_cache[[as.character(year)]])) {
-    message(paste("🧠 Using cached roster for", year))
+    message(paste("Using cached roster for", year))
     return(roster_cache[[as.character(year)]])
   }
   
@@ -63,7 +63,7 @@ load_rosters <- function(year, refresh = FALSE) {
   })
   
   roster_cache[[as.character(year)]] <<- all_rosters
-  message(paste("✅ Rosters loaded for", year, "→", nrow(all_rosters), "players"))
+  message(paste("Rosters loaded for", year, "→", nrow(all_rosters), "players"))
   return(all_rosters)
 }
 
@@ -74,9 +74,9 @@ load_team_and_player_data <- function(years = 2019:2024) {
   standings_data <- hitters_data <- pitchers_data <- players_data <- list()
   
   for (yr in years) {
-    message(paste("📦 Fetching", yr, "data..."))
+    message(paste("Fetching", yr, "data..."))
     
-    # 🏆 Team Standings
+    # Team Standings
     standings_json <- get_api_json(paste0(base_url, "/standings?season=", yr))
     if (!is.null(standings_json$records)) {
       records <- standings_json$records
@@ -85,7 +85,7 @@ load_team_and_player_data <- function(years = 2019:2024) {
       }))
     }
     
-    # ⚾ Team Hitting
+    # Team Hitting
     hit_json <- get_api_json(paste0(base_url, "/teams/stats?group=hitting&season=", yr))
     if (!is.null(hit_json$stats[[1]]$splits)) {
       hit_df <- hit_json$stats[[1]]$splits
@@ -94,7 +94,7 @@ load_team_and_player_data <- function(years = 2019:2024) {
       hitters_data[[as.character(yr)]] <- cbind(Team = hit_df$Team, hit_df$stat)
     }
     
-    # ⚾ Team Pitching
+    # Team Pitching
     pit_json <- get_api_json(paste0(base_url, "/teams/stats?group=pitching&season=", yr))
     if (!is.null(pit_json$stats[[1]]$splits)) {
       pit_df <- pit_json$stats[[1]]$splits
@@ -103,7 +103,7 @@ load_team_and_player_data <- function(years = 2019:2024) {
       pitchers_data[[as.character(yr)]] <- cbind(Team = pit_df$Team, pit_df$stat)
     }
     
-    # 👤 Player Stats
+    # Player Stats
     roster <- load_rosters(yr)
     if (nrow(roster) > 0) {
       player_stats <- purrr::map_dfr(roster$PlayerID, function(pid) {
@@ -121,7 +121,7 @@ load_team_and_player_data <- function(years = 2019:2024) {
       })
       if (nrow(player_stats) > 0) {
         players_data[[as.character(yr)]] <- player_stats
-        message(paste("✅ Player stats loaded for", yr, ":", nrow(player_stats)))
+        message(paste("Player stats loaded for", yr, ":", nrow(player_stats)))
       }
     }
   }
@@ -240,7 +240,7 @@ train_and_forecast <- function(df, features, target = "Wins") {
            Change_vs_Last = Predicted_2025_Wins - Wins) %>%
     arrange(desc(Predicted_2025_Wins))
   
-  cat("\n🏆 Predicted 2025 MLB Team Wins:\n")
+  cat("\nPredicted 2025 MLB Team Wins:\n")
   print(forecast, n = nrow(forecast))
 }
 
