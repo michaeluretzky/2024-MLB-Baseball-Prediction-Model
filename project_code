@@ -70,7 +70,7 @@ load_rosters <- function(year, refresh = FALSE) {
 # -----------------------------------------------------------
 # 3. LOAD TEAM + PLAYER DATA
 # -----------------------------------------------------------
-load_team_and_player_data <- function(years = 2019:2024) {
+load_team_and_player_data <- function(years = 2000:2023) {
   standings_data <- hitters_data <- pitchers_data <- players_data <- list()
   
   for (yr in years) {
@@ -240,7 +240,7 @@ train_and_forecast <- function(df, features, target = "Wins") {
            Change_vs_Last = Predicted_2025_Wins - Wins) %>%
     arrange(desc(Predicted_2025_Wins))
   
-  cat("\nPredicted 2025 MLB Team Wins:\n")
+  cat("\nPredicted 2024 MLB Team Wins:\n")
   print(forecast, n = nrow(forecast))
 }
 
